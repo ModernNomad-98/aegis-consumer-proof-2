@@ -4,6 +4,11 @@
 # values, and fails closed on any error. No provider API call, no deploy, no
 # application code. Must be merged to main before it can read these secrets,
 # because the environment branch policy allows main only.
+#
+# Runner provisioning: the PostgreSQL client (psql) is installed explicitly
+# instead of relying on what the ubuntu-latest image happens to ship. The
+# preflight then runs the client once, so a missing or broken client is
+# classified as a provisioning failure and never reported as a probe result.
 name: Connectivity gate (SELECT 1)
 
 on:
@@ -21,6 +26,30 @@ jobs:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       MIGRATION_DATABASE_URL: ${{ secrets.MIGRATION_DATABASE_URL }}
     steps:
+      - name: Provision PostgreSQL client (psql)
+        shell: bash
+        run: |
+          set -u -o pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client
+
+      - name: Preflight psql client (classified, fail closed)
+        shell: bash
+        run: |
+          set -u -o pipefail
+
+          # A usable client must both resolve on PATH and execute. Either
+          # failure is a provisioning failure, not a probe result, so it is
+          # reported with the same classification token used by the probe.
+          if ! command -v psql >/dev/null 2>&1; then
+            echo "CONNECTIVITY: FAIL (psql client unavailable)"
+            exit 1
+          fi
+          if ! psql --version >/dev/null 2>&1; then
+            echo "CONNECTIVITY: FAIL (psql client unavailable)"
+            exit 1
+          fi
+
       - name: Probe both database connections (PASS/FAIL only)
         shell: bash
         run: |
