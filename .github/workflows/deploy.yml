@@ -1,0 +1,67 @@
+name: Deploy reviewed revision
+on:
+  workflow_dispatch:
+    inputs:
+      review_pr:
+        description: Pull request with independent exact-head reproduce approval
+        required: true
+        type: string
+permissions:
+  contents: read
+  pull-requests: read
+  actions: read
+concurrency:
+  group: deploy-synthetic-service
+  cancel-in-progress: false
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node scripts/review-gate.mjs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REVIEW_PR: ${{ inputs.review_pr }}
+  deploy:
+    needs: review
+    # Existing protected environment for this repository: proof2-deploy
+    # (id 25749368568, branch policy id 64859958, policy "main" only).
+    environment: proof2-deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run build
+      - run: npm test
+      - name: Apply and verify migration, then test synthetic auth and RLS
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          MIGRATION_DATABASE_URL: ${{ secrets.MIGRATION_DATABASE_URL }}
+          # Non-secret synthetic fixture constant, deliberately NOT an environment
+          # secret: this workflow only writes disposable synthetic fixtures to a
+          # disposable synthetic database, and the repository has no such secret.
+          SYNTHETIC_PASSWORD: synthetic-deploy-fixture-password-only
+        run: |
+          npm run migrate
+          npm run verify:migration
+          npm run seed
+          npm run test:integration
+      - name: Recheck review immediately before deployment
+        run: node scripts/review-gate.mjs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REVIEW_PR: ${{ inputs.review_pr }}
+      - name: Deploy exact revision and verify health
+        run: npm run deploy
+        env:
+          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+          # Optional repository/environment variable. When it is unset or empty,
+          # scripts/deploy.mjs falls back to the documented Render service URL
+          # (render.yaml service "tenant-workspace") plus the /health path.
+          HEALTHCHECK_URL: ${{ vars.HEALTHCHECK_URL }}

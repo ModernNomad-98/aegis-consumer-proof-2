@@ -1,0 +1,16 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: migration_login
+      POSTGRES_PASSWORD: local_migration_only
+      POSTGRES_DB: app
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - ./scripts/local-init.sql:/docker-entrypoint-initdb.d/local-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U migration_login -d app"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
