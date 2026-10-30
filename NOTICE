@@ -2,7 +2,11 @@ Project Aegis
 Copyright 2026 The Project Aegis Authors
 
 This repository contains material derived from Project Aegis
-(https://github.com/ModernNomad-98/Project-Aegis), vendored at commit
+(https://github.com/ModernNomad-98/Project-Aegis), release v0.1.0
+(https://github.com/ModernNomad-98/Project-Aegis/releases/tag/v0.1.0;
+tag commit 199ddfcd60602b27b0ae68ca180df8733227f5b2).
+
+The vendored snapshot used for reproducibility was taken at commit
 ffb040c7a363648856475280646bbd142dfabe4e.
 
 The Project Aegis names identify the source project and its maintainer. They are
