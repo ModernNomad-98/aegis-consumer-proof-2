@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: proof2-web
+    runtime: node
+    autoDeployTrigger: 'off'
+    buildCommand: npm ci --ignore-scripts --no-audit --no-fund && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: 22
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: APP_ORIGIN
+        sync: false
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: REPORTS_TENANTS
+        value: tenant-a

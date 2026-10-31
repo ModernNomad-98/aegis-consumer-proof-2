@@ -1,0 +1,15 @@
+{
+  "name": "tenant-workspace", "version": "0.1.0", "private": true, "type": "module",
+  "engines": { "node": ">=22 <23" },
+  "scripts": {
+    "dev": "tsx watch src/server.ts", "build": "tsc -p tsconfig.json",
+    "start": "node dist/src/server.js", "test": "tsx --test tests/unit.test.ts",
+    "test:gate": "node --test tests/review-gate.test.mjs",
+    "test:integration": "tsx --test --test-concurrency=1 tests/integration.test.ts",
+    "migrate": "tsx scripts/migrate.ts", "verify:migration": "tsx scripts/verify.ts",
+    "seed": "tsx scripts/seed.ts", "reproduce": "node scripts/reproduce.mjs",
+    "deploy": "node scripts/deploy.mjs"
+  },
+  "dependencies": { "@fastify/cookie": "^11.0.2", "@fastify/rate-limit": "^10.3.0", "fastify": "^5.6.1", "pg": "^8.16.3" },
+  "devDependencies": { "@types/node": "^22.18.0", "@types/pg": "^8.15.5", "tsx": "^4.20.5", "typescript": "^5.9.2" }
+}
