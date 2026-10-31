@@ -1,9 +1,20 @@
 # First workflow added to this repository (manual connectivity gate only).
 # Purpose: prove that the main-only `proof2-deploy` environment can reach BOTH
-# databases with a plain "SELECT 1". Prints PASS/FAIL only, never connection
-# values, and fails closed on any error. No provider API call, no deploy, no
-# application code. Must be merged to main before it can read these secrets,
-# because the environment branch policy allows main only.
+# databases with a plain "SELECT 1". Prints PASS/FAIL plus, on failure, exactly
+# one fixed class token; never prints connection values, and fails closed on any
+# error. No provider API call, no deploy, no application code. Must be merged to
+# main before it can read these secrets, because the environment branch policy
+# allows main only.
+#
+# Failure classification: the probe captures psql stderr (it used to discard it)
+# and maps the first error class to one token from a fixed vocabulary. stderr is
+# first sanitized defensively (anything from `password=` onward and any URL-like
+# token is redacted) and is then only pattern-matched: it is never printed and
+# never evaluated. The token vocabulary is PASSWORD_AUTH_FAILED, INVALID_URI,
+# CONNECT_ERROR, SSL_ERROR, ROLE_NOT_FOUND, DB_NOT_FOUND, SQLSTATE_<code> (only
+# for a five-character code matching the fixed pattern) and OTHER. The psql
+# invocation, one-attempt-per-URL behaviour, PASS/FAIL labels, secret wiring and
+# fail-closed exit semantics are unchanged.
 #
 # Runner provisioning: the PostgreSQL client (psql) is installed explicitly
 # instead of relying on what the ubuntu-latest image happens to ship. The
@@ -50,7 +61,7 @@ jobs:
             exit 1
           fi
 
-      - name: Probe both database connections (PASS/FAIL only)
+      - name: Probe both database connections (PASS/FAIL + fixed failure class)
         shell: bash
         run: |
           set -u -o pipefail
@@ -60,18 +71,95 @@ jobs:
             exit 1
           fi
 
+          # Defence in depth. The sanitized form is only ever pattern-matched;
+          # it is never printed and never evaluated. It removes anything from
+          # `password=` to the end of that line and redacts URL-like tokens, so
+          # even an unexpected pattern match cannot carry a credential-shaped
+          # fragment into the classification step.
+          sanitize() {
+            local s="$1"
+            printf '%s' "$s" | sed -E \
+              -e 's/(password=).*/\1<redacted>/I' \
+              -e 's#[A-Za-z][A-Za-z0-9+.-]*://[^[:space:]]+#<redacted>#g'
+          }
+
+          # Map sanitized stderr to exactly one token from the fixed vocabulary
+          # in this file's header comment. Lower-casing is safe here because the
+          # original text is never printed; SQLSTATE is kept only when it is
+          # exactly the fixed five-character code. Never returns raw text.
+          classify() {
+            local err_lc="${1,,}" state=""
+            if [[ "$1" =~ (FATAL|ERROR|PANIC):[[:space:]]+([0-9A-Z]{5}): ]]; then
+              state="${BASH_REMATCH[2]}"
+            elif [[ "$1" =~ SQLSTATE[[:space:]]+([0-9A-Z]{5}) ]]; then
+              state="${BASH_REMATCH[1]}"
+            fi
+            case "$err_lc" in
+              *'password authentication failed'*|*'no password supplied'*|*'authentication failed'*)
+                printf 'PASSWORD_AUTH_FAILED'
+                ;;
+              *'role'*'does not exist'*)
+                printf 'ROLE_NOT_FOUND'
+                ;;
+              *'database'*'does not exist'*)
+                printf 'DB_NOT_FOUND'
+                ;;
+              *'invalid uri'*|*'invalid connection string'*|*'could not parse connection string'*|\
+              *'invalid percent-encoded'*|*'invalid uri query parameter'*|*'invalid uri scheme'*|\
+              *'invalid ipv6 address'*|*'invalid port number'*|*'missing key/value separator'*|\
+              *'unrecognized connection parameter'*|*'invalid connection option'*|\
+              *'missing "="'*|*'connection string requires a value'*|*'invalid integer value'*|\
+              *'invalid sslmode value'*|*'invalid channel_binding value'*|\
+              *'invalid gssencmode value'*|*'invalid target_session_attrs value'*)
+                printf 'INVALID_URI'
+                ;;
+              *'ssl error'*|*'ssl syscall'*|*'certificate'*|*'self-signed'*|*'sslmode'*|\
+              *'ssl support'*|*'channel binding'*|*'does not support ssl'*|*'ssl connection'*)
+                printf 'SSL_ERROR'
+                ;;
+              *'could not connect'*|*'connection refused'*|*'timeout expired'*|\
+              *'connection timed out'*|*'operation timed out'*|*'could not translate host'*|\
+              *'name or service not known'*|*'temporary failure in name resolution'*|\
+              *'nodename nor servname'*|*'no route to host'*|*'network is unreachable'*|\
+              *'connection reset'*|*'server closed the connection unexpectedly'*|\
+              *'could not resolve'*|*'connection to server'*)
+                printf 'CONNECT_ERROR'
+                ;;
+              *)
+                if [ -n "$state" ]; then
+                  printf 'SQLSTATE_%s' "$state"
+                else
+                  printf 'OTHER'
+                fi
+                ;;
+            esac
+          }
+
           probe() {
-            local name="$1" url="$2" out rc
+            local name="$1" url="$2" out rc err errfile class
             if [ -z "$url" ]; then
               printf '%s: FAIL (secret not supplied)\n' "$name"
               return 1
             fi
-            # The URL is passed as an argument only; it is never echoed and
-            # psql diagnostics are discarded so no host, user or password leaks.
-            out="$(psql "$url" -X --no-password -v ON_ERROR_STOP=1 -tA -c 'SELECT 1' 2>/dev/null)"
-            rc=$?
+            # The URL is passed as an argument only; it is never echoed. stdout
+            # and stderr are captured separately, and stderr goes no further
+            # than the fixed class token produced below. Exactly one attempt:
+            # there is no retry on a failed probe.
+            errfile="$(mktemp "${RUNNER_TEMP:-/tmp}/psql-stderr.XXXXXX")" || {
+              printf '%s: FAIL (class: OTHER)\n' "$name"
+              return 1
+            }
+            if out="$(psql "$url" -X --no-password -v ON_ERROR_STOP=1 -tA -c 'SELECT 1' 2>"$errfile")"; then
+              rc=0
+            else
+              rc=$?
+            fi
+            # Captured for classification only; never printed.
+            err="$(cat "$errfile" 2>/dev/null || true)"
+            rm -f "$errfile"
             if [ "$rc" -ne 0 ] || [ "$out" != "1" ]; then
-              printf '%s: FAIL\n' "$name"
+              class="$(classify "$(sanitize "$err")")"
+              printf '%s: FAIL (class: %s)\n' "$name" "$class"
               return 1
             fi
             printf '%s: PASS\n' "$name"
