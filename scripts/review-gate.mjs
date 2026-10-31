@@ -281,21 +281,18 @@ async function evaluateReviewEvidence(inputs, pr, head, mergedAt, fetchImpl) {
     && hasWholeLineMarker(comment.body)
     && comment.author_association === 'OWNER'
     && comment.user && comment.user.type === 'User');
-  // F1: comments can be edited after they are posted. An evidence comment is
-  // eligible only when its LAST edit (updated_at, falling back to created_at)
-  // precedes merged_at, so a pre-merge placeholder cannot be rewritten into a
-  // PASS block after the merge.
+  // F1/R1: comments can be edited after they are posted, so the ordering control
+  // uses the LAST edit (updated_at, falling back to created_at). An evidence
+  // comment is eligible only if that time is <= merged_at. R1: if ANY owner
+  // whole-line-marker comment was edited after the merge (or has an unparseable
+  // timestamp), deny E_REVIEW_ORDER unconditionally - otherwise a post-merge edit
+  // of a REVISE block would make it ineligible and resurrect an older PASS block.
   const mergedTime = Date.parse(mergedAt || '');
   const eligibleEvidence = [];
   let orderDeny = false;
-  let markerDeny = false;
   for (const comment of ownerEvidenceComments) {
     const effective = commentEffectiveTime(comment);
-    if (effective === null) {
-      markerDeny = true;
-      continue;
-    }
-    if (!Number.isFinite(mergedTime) || effective > mergedTime) {
+    if (effective === null || !Number.isFinite(mergedTime) || effective > mergedTime) {
       orderDeny = true;
       continue;
     }
@@ -304,6 +301,7 @@ async function evaluateReviewEvidence(inputs, pr, head, mergedAt, fetchImpl) {
   eligibleEvidence.sort((left, right) => left.effective - right.effective
     || Number(left.comment.id || 0) - Number(right.comment.id || 0));
   let evidenceDeny = null;
+  let evidenceAllow = null;
   if (eligibleEvidence.length > 0) {
     const comment = eligibleEvidence[eligibleEvidence.length - 1].comment;
     const parsed = parseEvidenceBlock(comment.body);
@@ -315,7 +313,7 @@ async function evaluateReviewEvidence(inputs, pr, head, mergedAt, fetchImpl) {
     else if (!EVIDENCE_MODEL.test(parsed.reviewerModel) || !EVIDENCE_MODEL.test(parsed.builderModel)) evidenceDeny = 'E_REVIEW_MARKER';
     else if (normalizeModel(parsed.reviewerModel) === normalizeModel(parsed.builderModel)) evidenceDeny = 'E_REVIEW_INDEPENDENCE';
     else {
-      return {
+      evidenceAllow = {
         kind: 'agent-evidence-comment',
         id: comment.id,
         login: comment.user.login,
@@ -327,13 +325,12 @@ async function evaluateReviewEvidence(inputs, pr, head, mergedAt, fetchImpl) {
     }
   }
 
+  // R1: this check is unconditional, before any eligible evidence may allow.
+  requireCode(!orderDeny, 'E_REVIEW_ORDER');
+  if (evidenceAllow) return evidenceAllow;
   requireCode(!approvalsAtHead.some((review) => review.user && review.user.login === (pr.user && pr.user.login)), 'E_REVIEW_SELF');
   requireCode(!formalTrustDeny, formalTrustDeny);
   requireCode(approvalsAtHead.length === 0, 'E_REVIEW_ORDER');
-  if (eligibleEvidence.length === 0) {
-    requireCode(!orderDeny, 'E_REVIEW_ORDER');
-    requireCode(!markerDeny, 'E_REVIEW_MARKER');
-  }
   if (evidenceDeny) throw new GateError(evidenceDeny);
   throw new GateError('E_REVIEW_NONE');
 }

@@ -186,10 +186,18 @@ Two forms are accepted:
   `reviewed-body-sha256` equal to the current pull-request body hash; reviewer
   and builder model declarations present and different after ignoring case,
   punctuation and whitespace (so "DeepSeek-V4" and "DeepSeek V4" cannot pass as
-  different vendors). The latest eligible owner block wins, so a later owner
-  `verdict: REVISE` evidence comment re-blocks the gate. **Recorded limitation:**
-  the block is self-asserted because all agent sessions share one GitHub login;
-  it is review evidence, not a second-account approval.
+  different vendors). The latest eligible owner block wins. The ordering control
+  is **fail-closed**: if **any** owner whole-line-marker comment was last edited
+  after `merged_at` (or has an unparseable timestamp), the gate denies
+  `E_REVIEW_ORDER` **unconditionally**, even when another owner PASS block is
+  still eligible - so a later owner `verdict: REVISE` block re-blocks the gate,
+  and editing that REVISE block after the merge cannot resurrect an older PASS
+  block. **Recorded limitations:** the block is self-asserted because all agent
+  sessions share one GitHub login (review evidence, not a second-account
+  approval); GitHub timestamps are whole-second, so an edit in the same second
+  as the merge counts as pre-merge; and deleting an owner evidence comment after
+  the merge cannot be detected through the pull-request comments API, so the
+  gate only evaluates surviving comments.
 
 ### Owner prerequisites before the first deploy
 
@@ -218,7 +226,8 @@ Two forms are accepted:
    reviewed head H and the exact pull-request body. Agent evidence (b) must be
    created and last edited before the merge: the gate compares `updated_at`
    (falling back to `created_at`) with `merged_at` and denies `E_REVIEW_ORDER`
-   otherwise. Do not edit an evidence comment after the merge.
+   otherwise. Do not edit an evidence comment after the merge - any such edit
+   denies the gate even if another owner PASS block is still eligible.
 2. Merge this pull request with **"Create a merge commit"** while it is up to
    date with `main` (strict tree equality requires M's tree to equal the reviewed
    head's tree).
@@ -267,6 +276,10 @@ Implementation references: [cookie signing](https://github.com/fastify/fastify-c
 - The deploy gate's **positive path has never been exercised end-to-end**; only
   the deny path and the offline test matrix are proven. The first real deploy
   remains owner-held.
+- Evidence-ordering controls are whole-second and comment-history only: an edit
+  in the same second as the merge counts as pre-merge, and deletion of an owner
+  evidence comment after the merge is not detectable through the pull-request
+  comments API (the gate evaluates surviving comments).
 - Browser rendering/interaction review remains outstanding. No signup,
   reset/MFA, distributed rate limiter, session-cleanup scheduler, tenant
   offboarding or operational backup/restore automation exists.

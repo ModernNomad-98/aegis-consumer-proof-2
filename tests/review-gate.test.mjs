@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import {
   evaluateGate,
@@ -497,17 +497,78 @@ test('negative: an evidence comment edited after the merge is denied (F1)', asyn
   await expectDeny(fixture, ctx, 'E_REVIEW_ORDER');
 });
 
-test('negative: an owner marker comment edited post-merge cannot be downgraded to REVISE (F1)', async (t) => {
+test('negative: PROBE-A - PASS then REVISE then a post-merge edit of REVISE denies (R1)', async (t) => {
   const fixture = makeFixture();
   t.after(() => cleanup(fixture));
-  const rewrittenAfterMerge = evidenceComment({
+  const pass = evidenceComment({
     expectedHead: fixture.head,
     id: 1,
     created_at: '2026-10-30T20:10:00Z',
-    updated_at: '2026-10-30T22:30:00Z',
+    updated_at: '2026-10-30T20:10:00Z',
     verdict: 'PASS',
   });
-  await expectDeny(fixture, context(fixture, { comments: [rewrittenAfterMerge] }), 'E_REVIEW_ORDER');
+  // A real multi-comment path: the older PASS is still eligible, but the later
+  // REVISE comment was edited after the 21:00Z merge and must deny regardless.
+  const reviseEditedAfterMerge = evidenceComment({
+    expectedHead: fixture.head,
+    id: 2,
+    created_at: '2026-10-30T20:40:00Z',
+    updated_at: '2026-10-30T22:30:00Z',
+    verdict: 'REVISE',
+  });
+  await expectDeny(fixture, context(fixture, { comments: [pass, reviseEditedAfterMerge] }), 'E_REVIEW_ORDER');
+});
+
+test('negative: PROBE-B control - PASS then an unedited REVISE denies with E_REVIEW_REVISE (R1)', async (t) => {
+  const fixture = makeFixture();
+  t.after(() => cleanup(fixture));
+  const pass = evidenceComment({
+    expectedHead: fixture.head,
+    id: 1,
+    created_at: '2026-10-30T20:10:00Z',
+    updated_at: '2026-10-30T20:10:00Z',
+    verdict: 'PASS',
+  });
+  const revise = evidenceComment({
+    expectedHead: fixture.head,
+    id: 2,
+    created_at: '2026-10-30T20:40:00Z',
+    updated_at: '2026-10-30T20:40:00Z',
+    verdict: 'REVISE',
+  });
+  await expectDeny(fixture, context(fixture, { comments: [pass, revise] }), 'E_REVIEW_REVISE');
+});
+
+test('negative: an unparseable owner evidence timestamp denies E_REVIEW_ORDER (R1)', async (t) => {
+  const fixture = makeFixture();
+  t.after(() => cleanup(fixture));
+  const broken = evidenceComment({ expectedHead: fixture.head });
+  broken.created_at = 'not-a-timestamp';
+  broken.updated_at = 'not-a-timestamp';
+  await expectDeny(fixture, context(fixture, { comments: [broken] }), 'E_REVIEW_ORDER');
+});
+
+test('negative: a post-merge-edited owner comment denies even beside an otherwise valid owner PASS (R2)', async (t) => {
+  const fixture = makeFixture();
+  t.after(() => cleanup(fixture));
+  const validPass = evidenceComment({ expectedHead: fixture.head, id: 10, created_at: '2026-10-30T20:05:00Z' });
+  const markerCommentEditedAfterMerge = evidenceComment({
+    expectedHead: fixture.head,
+    id: 11,
+    created_at: '2026-10-30T20:15:00Z',
+    updated_at: '2026-10-30T22:45:00Z',
+    verdict: 'REVISE',
+  });
+  await expectDeny(fixture, context(fixture, { comments: [validPass, markerCommentEditedAfterMerge] }), 'E_REVIEW_ORDER');
+});
+
+test('README deployment steps post the review evidence before the merge (F2)', () => {
+  const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
+  const evidenceStep = readme.indexOf('1. **Post the review evidence');
+  const mergeStep = readme.indexOf('2. Merge this pull request');
+  assert.ok(evidenceStep >= 0, 'README must contain the evidence-first step');
+  assert.ok(mergeStep >= 0, 'README must contain the merge step');
+  assert.ok(evidenceStep < mergeStep, 'README must post the review evidence before merging');
 });
 
 test('negative: non-owner marker comments are ignored, not treated as denial (F3)', async (t) => {
