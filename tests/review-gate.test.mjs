@@ -562,6 +562,67 @@ test('negative: a post-merge-edited owner comment denies even beside an otherwis
   await expectDeny(fixture, context(fixture, { comments: [validPass, markerCommentEditedAfterMerge] }), 'E_REVIEW_ORDER');
 });
 
+test('negative: C1 - PASS then REVISE, then REVISE edited post-merge to remove the marker denies (N1)', async (t) => {
+  const fixture = makeFixture();
+  t.after(() => cleanup(fixture));
+  const pass = evidenceComment({
+    expectedHead: fixture.head,
+    id: 1,
+    created_at: '2026-10-30T20:10:00Z',
+    updated_at: '2026-10-30T20:10:00Z',
+  });
+  const reviseRewritten = evidenceComment({
+    expectedHead: fixture.head,
+    id: 2,
+    created_at: '2026-10-30T20:40:00Z',
+    updated_at: '2026-10-30T22:30:00Z',
+    verdict: 'REVISE',
+    body: 'withdrawn (edited after merge)',
+  });
+  await expectDeny(fixture, context(fixture, { comments: [pass, reviseRewritten] }), 'E_REVIEW_ORDER');
+});
+
+test('negative: C2 - PASS then REVISE, then REVISE edited post-merge to quote the marker denies (N1)', async (t) => {
+  const fixture = makeFixture();
+  t.after(() => cleanup(fixture));
+  const pass = evidenceComment({
+    expectedHead: fixture.head,
+    id: 1,
+    created_at: '2026-10-30T20:10:00Z',
+    updated_at: '2026-10-30T20:10:00Z',
+  });
+  const quotedRevise = evidenceComment({
+    expectedHead: fixture.head,
+    id: 2,
+    created_at: '2026-10-30T20:40:00Z',
+    updated_at: '2026-10-30T22:30:00Z',
+    verdict: 'REVISE',
+    body: '> Aegis deploy review evidence v1\n> verdict: REVISE\n> reviewed-head: ' + fixture.head,
+  });
+  await expectDeny(fixture, context(fixture, { comments: [pass, quotedRevise] }), 'E_REVIEW_ORDER');
+});
+
+test('positive: a new post-merge owner chat comment does not falsely deny (N1 narrow rule)', async (t) => {
+  const fixture = makeFixture();
+  t.after(() => cleanup(fixture));
+  const pass = evidenceComment({
+    expectedHead: fixture.head,
+    id: 1,
+    created_at: '2026-10-30T20:10:00Z',
+    updated_at: '2026-10-30T20:10:00Z',
+  });
+  const postMergeChat = evidenceComment({
+    expectedHead: fixture.head,
+    id: 2,
+    created_at: '2026-10-30T22:00:00Z',
+    updated_at: '2026-10-30T22:05:00Z',
+    body: 'post-merge owner chat, no evidence marker',
+  });
+  const result = await runGate(fixture, context(fixture, { comments: [pass, postMergeChat] }));
+  assert.equal(result.decision, 'ALLOW');
+  assert.equal(result.evidence.reviewId, 1);
+});
+
 test('README deployment steps post the review evidence before the merge (F2)', () => {
   const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
   const evidenceStep = readme.indexOf('1. **Post the review evidence');

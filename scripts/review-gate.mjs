@@ -273,26 +273,45 @@ async function evaluateReviewEvidence(inputs, pr, head, mergedAt, fetchImpl) {
   }
 
   const comments = await paginate(inputs, 'issues/' + inputs.reviewPr + '/comments', fetchImpl);
+  // F1/R1/N1: comments can be edited after they are posted, so the ordering
+  // control uses the LAST edit (updated_at, falling back to created_at). It runs
+  // over ALL owner User comments, not only comments that currently contain the
+  // marker: a pre-merge REVISE block edited after the merge to remove or alter
+  // its marker line would otherwise be dropped by the F3 marker filter and its
+  // post-merge edit would go unchecked (N1). Narrow rule: deny when an owner
+  // comment existed at merge time and was edited afterwards
+  // (created_at <= merged_at < updated_at), and deny when an owner marker comment
+  // is posted/edited after the merge or an owner timestamp is unparseable.
+  // Ordinary new post-merge owner comments (created after merged_at) do not deny.
+  const mergedTime = Date.parse(mergedAt || '');
+  const ownerComments = comments.filter((comment) => comment.author_association === 'OWNER'
+    && comment.user && comment.user.type === 'User');
+  let orderDeny = !Number.isFinite(mergedTime);
+  for (const comment of ownerComments) {
+    const created = Date.parse(comment.created_at || '');
+    const updated = Date.parse(comment.updated_at || comment.created_at || '');
+    if (!Number.isFinite(created) || !Number.isFinite(updated)) {
+      orderDeny = true;
+      continue;
+    }
+    if (created <= mergedTime && mergedTime < updated) {
+      orderDeny = true;
+      continue;
+    }
+    if (hasWholeLineMarker(comment.body) && updated > mergedTime) {
+      orderDeny = true;
+    }
+  }
   // F3: this repository is public, so ANY GitHub user can comment. Only a
   // whole-line marker comment from the repository owner account (a User, not a
   // Bot/Organization) is review evidence. The filter runs BEFORE choosing the
   // latest comment, so an outsider comment cannot block or supersede a deploy.
-  const ownerEvidenceComments = comments.filter((comment) => typeof comment.body === 'string'
-    && hasWholeLineMarker(comment.body)
-    && comment.author_association === 'OWNER'
-    && comment.user && comment.user.type === 'User');
-  // F1/R1: comments can be edited after they are posted, so the ordering control
-  // uses the LAST edit (updated_at, falling back to created_at). An evidence
-  // comment is eligible only if that time is <= merged_at. R1: if ANY owner
-  // whole-line-marker comment was edited after the merge (or has an unparseable
-  // timestamp), deny E_REVIEW_ORDER unconditionally - otherwise a post-merge edit
-  // of a REVISE block would make it ineligible and resurrect an older PASS block.
-  const mergedTime = Date.parse(mergedAt || '');
+  const ownerEvidenceComments = ownerComments.filter((comment) => typeof comment.body === 'string'
+    && hasWholeLineMarker(comment.body));
   const eligibleEvidence = [];
-  let orderDeny = false;
   for (const comment of ownerEvidenceComments) {
     const effective = commentEffectiveTime(comment);
-    if (effective === null || !Number.isFinite(mergedTime) || effective > mergedTime) {
+    if (effective === null || effective > mergedTime) {
       orderDeny = true;
       continue;
     }
