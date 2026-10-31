@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Tenant workspace</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
+<body><main><header><p class="eyebrow">SYNTHETIC WORKSPACE</p><h1>Your team's records</h1><p>A small shared space with clear tenant boundaries.</p></header>
+<p id="status" role="status" aria-live="polite">Sign in to continue.</p>
+<section id="signin"><h2>Sign in</h2><form id="login"><label>Username<input name="username" required autocomplete="username" placeholder="tenant-a-member"></label><label>Password<input name="password" type="password" required autocomplete="current-password"></label><button>Sign in</button></form></section>
+<section id="workspace" hidden><div class="row"><h2 id="identity">Workspace</h2><button id="logout" class="secondary">Sign out</button></div><ul id="records"></ul>
+<form id="create" hidden><label>New record<input name="title" required maxlength="120"></label><button>Add record</button></form>
+<section id="reports" hidden><h2>Reports</h2><button id="load-report" class="secondary">View record count</button><p id="report-result"></p></section></section>
+<footer>Synthetic tenants only. No real users or data.</footer></main></body></html>

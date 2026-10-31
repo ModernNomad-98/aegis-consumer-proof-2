@@ -1,0 +1,30 @@
+name: Verify
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  reproduce:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: migration_login
+          POSTGRES_PASSWORD: local_migration_only
+          POSTGRES_DB: app
+        ports: ['5432:5432']
+        options: --health-cmd "pg_isready -U migration_login -d app" --health-interval 2s --health-timeout 5s --health-retries 30
+    env:
+      DATABASE_URL: postgres://app_login:local_app_only@localhost:5432/app
+      MIGRATION_DATABASE_URL: postgres://migration_login:local_migration_only@localhost:5432/app
+      SYNTHETIC_PASSWORD: synthetic-ci-password-only
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Create restricted synthetic login
+        env:
+          PGPASSWORD: local_migration_only
+        run: psql -h localhost -U migration_login -d app -v ON_ERROR_STOP=1 -f scripts/local-init.sql
+      - run: npm run reproduce
