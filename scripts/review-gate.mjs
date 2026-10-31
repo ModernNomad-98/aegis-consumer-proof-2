@@ -185,6 +185,26 @@ function parseEvidenceBlock(body) {
     : null;
 }
 
+function hasWholeLineMarker(body) {
+  if (typeof body !== 'string') return false;
+  return body.split(/\r?\n/).map((line) => line.trimEnd()).includes(REVIEW_EVIDENCE_MARKER);
+}
+
+function commentEffectiveTime(comment) {
+  // F1: issue comments can be edited after posting, so the ordering control uses
+  // the later of created_at and updated_at (GitHub always returns updated_at for
+  // issue comments; created_at is the fallback for recorded/mocked payloads).
+  const stamp = comment.updated_at || comment.created_at;
+  const value = Date.parse(stamp || '');
+  return Number.isFinite(value) ? value : null;
+}
+
+function normalizeModel(value) {
+  // F4: compare model declarations after stripping punctuation/whitespace so
+  // "DeepSeek-V4" and "DeepSeek V4" cannot pass as different vendors.
+  return String(value).trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
 function trustedReviewer(review, pr) {
   return Boolean(review && review.user && review.user.login)
     && review.user.login !== (pr && pr.user ? pr.user.login : undefined)
@@ -253,29 +273,54 @@ async function evaluateReviewEvidence(inputs, pr, head, mergedAt, fetchImpl) {
   }
 
   const comments = await paginate(inputs, 'issues/' + inputs.reviewPr + '/comments', fetchImpl);
-  const evidenceComments = comments
-    .filter((comment) => typeof comment.body === 'string' && comment.body.includes(REVIEW_EVIDENCE_MARKER))
-    .sort((left, right) => String(left.created_at || '').localeCompare(String(right.created_at || ''))
-      || Number(left.id || 0) - Number(right.id || 0));
+  // F3: this repository is public, so ANY GitHub user can comment. Only a
+  // whole-line marker comment from the repository owner account (a User, not a
+  // Bot/Organization) is review evidence. The filter runs BEFORE choosing the
+  // latest comment, so an outsider comment cannot block or supersede a deploy.
+  const ownerEvidenceComments = comments.filter((comment) => typeof comment.body === 'string'
+    && hasWholeLineMarker(comment.body)
+    && comment.author_association === 'OWNER'
+    && comment.user && comment.user.type === 'User');
+  // F1: comments can be edited after they are posted. An evidence comment is
+  // eligible only when its LAST edit (updated_at, falling back to created_at)
+  // precedes merged_at, so a pre-merge placeholder cannot be rewritten into a
+  // PASS block after the merge.
+  const mergedTime = Date.parse(mergedAt || '');
+  const eligibleEvidence = [];
+  let orderDeny = false;
+  let markerDeny = false;
+  for (const comment of ownerEvidenceComments) {
+    const effective = commentEffectiveTime(comment);
+    if (effective === null) {
+      markerDeny = true;
+      continue;
+    }
+    if (!Number.isFinite(mergedTime) || effective > mergedTime) {
+      orderDeny = true;
+      continue;
+    }
+    eligibleEvidence.push({ comment, effective });
+  }
+  eligibleEvidence.sort((left, right) => left.effective - right.effective
+    || Number(left.comment.id || 0) - Number(right.comment.id || 0));
   let evidenceDeny = null;
-  if (evidenceComments.length > 0) {
-    const comment = evidenceComments[evidenceComments.length - 1];
+  if (eligibleEvidence.length > 0) {
+    const comment = eligibleEvidence[eligibleEvidence.length - 1].comment;
     const parsed = parseEvidenceBlock(comment.body);
-    if (comment.author_association !== 'OWNER') evidenceDeny = 'E_REVIEW_NOT_TRUSTED';
-    else if (!parsed) evidenceDeny = 'E_REVIEW_MARKER';
-    else if (!createdBeforeMerge(comment.created_at, mergedAt)) evidenceDeny = 'E_REVIEW_ORDER';
+    if (!parsed) evidenceDeny = 'E_REVIEW_MARKER';
     else if (parsed.verdict !== 'PASS') evidenceDeny = 'E_REVIEW_REVISE';
     else if (!HEX40.test(parsed.reviewedHead) || parsed.reviewedHead !== head) evidenceDeny = 'E_REVIEW_MARKER';
     else if (!HEX64.test(parsed.reviewedBodySha256)) evidenceDeny = 'E_REVIEW_MARKER';
     else if (parsed.reviewedBodySha256 !== sha256(pr.body || '')) evidenceDeny = 'E_REVIEW_BODY';
     else if (!EVIDENCE_MODEL.test(parsed.reviewerModel) || !EVIDENCE_MODEL.test(parsed.builderModel)) evidenceDeny = 'E_REVIEW_MARKER';
-    else if (parsed.reviewerModel.trim().toLowerCase() === parsed.builderModel.trim().toLowerCase()) evidenceDeny = 'E_REVIEW_INDEPENDENCE';
+    else if (normalizeModel(parsed.reviewerModel) === normalizeModel(parsed.builderModel)) evidenceDeny = 'E_REVIEW_INDEPENDENCE';
     else {
       return {
         kind: 'agent-evidence-comment',
         id: comment.id,
-        login: comment.user ? comment.user.login : 'unknown',
+        login: comment.user.login,
         createdAt: comment.created_at,
+        updatedAt: comment.updated_at || comment.created_at,
         reviewerModel: parsed.reviewerModel,
         builderModel: parsed.builderModel,
       };
@@ -285,6 +330,10 @@ async function evaluateReviewEvidence(inputs, pr, head, mergedAt, fetchImpl) {
   requireCode(!approvalsAtHead.some((review) => review.user && review.user.login === (pr.user && pr.user.login)), 'E_REVIEW_SELF');
   requireCode(!formalTrustDeny, formalTrustDeny);
   requireCode(approvalsAtHead.length === 0, 'E_REVIEW_ORDER');
+  if (eligibleEvidence.length === 0) {
+    requireCode(!orderDeny, 'E_REVIEW_ORDER');
+    requireCode(!markerDeny, 'E_REVIEW_MARKER');
+  }
   if (evidenceDeny) throw new GateError(evidenceDeny);
   throw new GateError('E_REVIEW_NONE');
 }

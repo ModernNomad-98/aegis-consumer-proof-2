@@ -172,6 +172,7 @@ function fakeFetch(ctx) {
 
 function evidenceComment(overrides) {
   const opts = overrides || {};
+  const created = opts.created_at || '2026-10-30T20:30:00Z';
   const fields = {
     verdict: opts.verdict || 'PASS',
     head: opts.head || opts.expectedHead,
@@ -189,9 +190,10 @@ function evidenceComment(overrides) {
   ];
   return {
     id: opts.id || 501,
-    created_at: opts.created_at || '2026-10-30T20:30:00Z',
+    created_at: created,
+    updated_at: opts.updated_at || created,
     author_association: opts.author_association || 'OWNER',
-    user: { login: opts.login || 'owner' },
+    user: { login: opts.login || 'owner', type: opts.userType || 'User' },
     body: opts.body || lines.join('\n'),
   };
 }
@@ -467,13 +469,111 @@ test('negative: malformed evidence block is denied', async (t) => {
   await expectDeny(fixture, context(fixture, { comments: [malformed] }), 'E_REVIEW_MARKER');
 });
 
-test('negative: evidence posted by a non-owner association is denied', async (t) => {
+test('positive: evidence created and last edited before the merge allows (F1)', async (t) => {
+  const fixture = makeFixture();
+  t.after(() => cleanup(fixture));
+  const ctx = context(fixture, {
+    comments: [evidenceComment({
+      expectedHead: fixture.head,
+      created_at: '2026-10-30T20:10:00Z',
+      updated_at: '2026-10-30T20:55:00Z',
+    })],
+  });
+  const result = await runGate(fixture, ctx);
+  assert.equal(result.decision, 'ALLOW');
+});
+
+test('negative: an evidence comment edited after the merge is denied (F1)', async (t) => {
+  const fixture = makeFixture();
+  t.after(() => cleanup(fixture));
+  // created before the 21:00Z merge, rewritten into a PASS block afterwards
+  const ctx = context(fixture, {
+    comments: [evidenceComment({
+      expectedHead: fixture.head,
+      created_at: '2026-10-30T20:10:00Z',
+      updated_at: '2026-10-30T22:30:00Z',
+    })],
+  });
+  await expectDeny(fixture, ctx, 'E_REVIEW_ORDER');
+});
+
+test('negative: an owner marker comment edited post-merge cannot be downgraded to REVISE (F1)', async (t) => {
+  const fixture = makeFixture();
+  t.after(() => cleanup(fixture));
+  const rewrittenAfterMerge = evidenceComment({
+    expectedHead: fixture.head,
+    id: 1,
+    created_at: '2026-10-30T20:10:00Z',
+    updated_at: '2026-10-30T22:30:00Z',
+    verdict: 'PASS',
+  });
+  await expectDeny(fixture, context(fixture, { comments: [rewrittenAfterMerge] }), 'E_REVIEW_ORDER');
+});
+
+test('negative: non-owner marker comments are ignored, not treated as denial (F3)', async (t) => {
   const fixture = makeFixture();
   t.after(() => cleanup(fixture));
   const ctx = context(fixture, {
     comments: [evidenceComment({ expectedHead: fixture.head, author_association: 'CONTRIBUTOR' })],
   });
-  await expectDeny(fixture, ctx, 'E_REVIEW_NOT_TRUSTED');
+  await expectDeny(fixture, ctx, 'E_REVIEW_NONE');
+});
+
+test('positive: a later outsider marker comment cannot block valid owner evidence (F3)', async (t) => {
+  const fixture = makeFixture();
+  t.after(() => cleanup(fixture));
+  const ownerEvidence = evidenceComment({
+    expectedHead: fixture.head,
+    id: 1,
+    created_at: '2026-10-30T20:10:00Z',
+    updated_at: '2026-10-30T20:10:00Z',
+  });
+  const outsiderNoise = evidenceComment({
+    expectedHead: fixture.head,
+    id: 2,
+    created_at: '2026-10-30T20:50:00Z',
+    updated_at: '2026-10-30T20:50:00Z',
+    author_association: 'CONTRIBUTOR',
+    verdict: 'REVISE',
+  });
+  const result = await runGate(fixture, context(fixture, { comments: [ownerEvidence, outsiderNoise] }));
+  assert.equal(result.decision, 'ALLOW');
+  assert.equal(result.evidence.reviewId, 1);
+});
+
+test('negative: owner evidence from a bot account is not treated as owner evidence (F3)', async (t) => {
+  const fixture = makeFixture();
+  t.after(() => cleanup(fixture));
+  const ctx = context(fixture, {
+    comments: [evidenceComment({ expectedHead: fixture.head, userType: 'Bot' })],
+  });
+  await expectDeny(fixture, ctx, 'E_REVIEW_NONE');
+});
+
+test('negative: the evidence marker must be an exact whole line (F3)', async (t) => {
+  const fixture = makeFixture();
+  t.after(() => cleanup(fixture));
+  const malformed = evidenceComment({ expectedHead: fixture.head });
+  malformed.body = 'see Aegis deploy review evidence v1 above\n'
+    + 'verdict: PASS\n'
+    + 'reviewed-head: ' + fixture.head + '\n'
+    + 'reviewed-body-sha256: ' + sha256(PR_BODY) + '\n'
+    + 'reviewer-model: DeepSeek V4 Flash\n'
+    + 'builder-model: Claude Opus 4.6\n';
+  await expectDeny(fixture, context(fixture, { comments: [malformed] }), 'E_REVIEW_NONE');
+});
+
+test('negative: model declarations equal after punctuation normalization are denied (F4)', async (t) => {
+  const fixture = makeFixture();
+  t.after(() => cleanup(fixture));
+  const ctx = context(fixture, {
+    comments: [evidenceComment({
+      expectedHead: fixture.head,
+      reviewerModel: 'DeepSeek-V4',
+      builderModel: 'DeepSeek V4',
+    })],
+  });
+  await expectDeny(fixture, ctx, 'E_REVIEW_INDEPENDENCE');
 });
 
 test('negative: review evidence that postdates the merge is denied', async (t) => {

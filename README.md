@@ -163,8 +163,14 @@ Two forms are accepted:
   distinct reviewer account exists today - D-G2 - so this path is dormant and
   untested end-to-end.)
 - **(b) Agent review evidence (D-G2 route, no second account):** a pull-request
-  conversation comment posted by the **repository owner account** before the
-  merge, containing exactly one block of this form (one field per line):
+  conversation comment posted by the **repository owner account** (a User
+  account; Bot/Organization comments are never evidence) whose **last edit is
+  before the merge** - the gate compares `updated_at` (falling back to
+  `created_at`) against `merged_at`, so a comment created before the merge and
+  edited after it is rejected. Other GitHub users can comment on this public
+  repository; their comments are filtered out **before** the latest-evidence
+  selection, so they can neither block nor supersede a deploy. The comment
+  contains exactly one block of this form (one field per line):
 
   `
   Aegis deploy review evidence v1
@@ -175,12 +181,15 @@ Two forms are accepted:
   builder-model: <model that authored the change>
   `
 
-  The gate requires: verdict `PASS`; `reviewed-head` equal to H;
+  The gate requires: the marker `Aegis deploy review evidence v1` to be an
+  exact whole line; verdict `PASS`; `reviewed-head` equal to H;
   `reviewed-body-sha256` equal to the current pull-request body hash; reviewer
-  and builder model declarations present and different. The latest such block
-  wins, so a later `verdict: REVISE` evidence comment re-blocks the gate.
-  **Recorded limitation:** the block is self-asserted because all agent sessions
-  share one GitHub login; it is review evidence, not a second-account approval.
+  and builder model declarations present and different after ignoring case,
+  punctuation and whitespace (so "DeepSeek-V4" and "DeepSeek V4" cannot pass as
+  different vendors). The latest eligible owner block wins, so a later owner
+  `verdict: REVISE` evidence comment re-blocks the gate. **Recorded limitation:**
+  the block is self-asserted because all agent sessions share one GitHub login;
+  it is review evidence, not a second-account approval.
 
 ### Owner prerequisites before the first deploy
 
@@ -205,11 +214,14 @@ Two forms are accepted:
 
 ### Deployment steps
 
-1. Merge this pull request with **"Create a merge commit"** while it is up to
+1. **Post the review evidence (a) or (b) above BEFORE merging**, bound to the
+   reviewed head H and the exact pull-request body. Agent evidence (b) must be
+   created and last edited before the merge: the gate compares `updated_at`
+   (falling back to `created_at`) with `merged_at` and denies `E_REVIEW_ORDER`
+   otherwise. Do not edit an evidence comment after the merge.
+2. Merge this pull request with **"Create a merge commit"** while it is up to
    date with `main` (strict tree equality requires M's tree to equal the reviewed
    head's tree).
-2. Post the review evidence (a) or (b) above bound to the reviewed head H and the
-   exact pull-request body.
 3. Dispatch `Deploy reviewed revision` from `main`, entering the merged
    pull-request number. The environment `proof2-deploy` (id `25749368568`,
    main-only branch policy `64859958`) stays main-only.

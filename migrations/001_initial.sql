@@ -8,7 +8,7 @@ DO $$ BEGIN
     CREATE ROLE app_runtime NOLOGIN NOSUPERUSER NOBYPASSRLS;
   END IF;
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'app_runtime'
-    AND (rolsuper OR rolbypassrls OR rolcanlogin)) THEN
+    AND (rolsuper OR rolbypassrls OR rolcanlogin OR rolcreaterole OR rolreplication)) THEN
     RAISE EXCEPTION 'existing app_runtime role has unsafe attributes';
   END IF;
 END $$;
